@@ -2,22 +2,42 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+import winston from 'winston';
+import 'winston-daily-rotate-file';
 
 dotenv.config();
-const BOT_VERSION = '0.3.7 Alpha';
+const BOT_VERSION = '0.4.0 Alpha';
 const DEBUG = process.env.DEBUG_LOGGING === 'true';
 
-console.log('Bot starting...');
-if (DEBUG) console.log('Debug logging ENABLED');
+// ─── Logger Setup ─────────────────────────────────────────────────────────────
+const transport = new winston.transports.DailyRotateFile({
+  filename: 'logs/bot-%DATE%.log',
+  datePattern: 'YYYY-MM-DD',
+  zippedArchive: false,
+  maxFiles: '2d',
+});
 
+const logger = winston.createLogger({
+  level: DEBUG ? 'debug' : 'info',
+  format: winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.printf(({ timestamp, level, message }) => `[${timestamp}] [${level}] ${message}`)
+  ),
+  transports: [transport, new winston.transports.Console()],
+});
+
+logger.info('Bot starting...');
+if (DEBUG) logger.debug('Debug logging ENABLED');
+
+// ─── Discord Client ───────────────────────────────────────────────────────────
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-  console.log(`Created by Recent - Version ${BOT_VERSION}`);
+  logger.info(`Logged in as ${client.user.tag}`);
+  logger.info(`Created by Recent - Version ${BOT_VERSION}`);
 });
 
-// Command handlers
+// ─── Command Handlers ─────────────────────────────────────────────────────────
 async function handleHelpTrivia(interaction) {
   const content = [
     '**Trivia Bot Help**',
@@ -27,63 +47,88 @@ async function handleHelpTrivia(interaction) {
     '• First register: `/register rsn:<Your RSN>`',
     '• Then submit: `/submit question:<Your Question> answer:<Correct Answer> [week:<Number>]`'
   ].join('\n');
-  await interaction.editReply({ content });
+  await safeEdit(interaction, content);
 }
 
 async function handleVersion(interaction) {
   const content = `Trivia Bot version: ${BOT_VERSION}`;
-  await interaction.editReply({ content });
+  await safeEdit(interaction, content);
 }
 
 async function handlePing(interaction) {
-  const reply = await interaction.reply({
-    content: 'Pinging...',
-    ephemeral: false,
-    fetchReply: true
-  });
+  const interactionTime = interaction.createdTimestamp;
+  const now = Date.now();
+  const delta = now - interactionTime;
+  logger.debug(`Ping command received. Interaction created ${delta}ms ago`);
 
-  const roundTripLatency = reply.createdTimestamp - interaction.createdTimestamp;
-  const discordApiLatency = client.ws.ping;
+  if (interaction.replied || interaction.deferred) {
+    logger.warn('Ping interaction already replied or deferred — skipping reply.');
+    return;
+  }
 
-  const response = [
-    `Pong! Round-trip latency: ${roundTripLatency}ms`,
-    `Discord API latency: ${Math.round(discordApiLatency)}ms`
-  ].join('\n');
+  let reply;
+  try {
+    reply = await interaction.reply({
+      content: 'Pinging...',
+      ephemeral: false,
+      fetchReply: true
+    });
+    logger.debug('Ping reply sent successfully.');
+  } catch (err) {
+    logger.error(`Ping reply failed: ${err.stack || err}`);
+    return;
+  }
 
-  await interaction.editReply({ content: response });
+  try {
+    const roundTripLatency = reply.createdTimestamp - interactionTime;
+    const discordApiLatency = client.ws.ping;
+    const response = [
+      `Pong! Round-trip latency: ${roundTripLatency}ms`,
+      `Discord API latency: ${Math.round(discordApiLatency)}ms`
+    ].join('\n');
+    await interaction.editReply({ content: response });
+    logger.debug(`Ping reply edited: round-trip ${roundTripLatency}ms`);
+  } catch (err) {
+    logger.error(`Ping editReply failed: ${err.stack || err}`);
+  }
 }
 
 async function handleRegister(interaction, opts) {
   const rsn = opts.getString('rsn');
   if (!rsn) {
-    await interaction.editReply({ content: 'You must provide an RSN to register.' });
+    await safeEdit(interaction, 'You must provide an RSN to register.');
     return;
   }
 
-  const res = await fetch(`${process.env.API_URL}?action=register`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-KEY': process.env.API_KEY
-    },
-    body: JSON.stringify({ discord_id: interaction.user.id, rsn }),
-  });
+  try {
+    const res = await fetch(`${process.env.API_URL}?action=register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': process.env.API_KEY
+      },
+      body: JSON.stringify({ discord_id: interaction.user.id, rsn }),
+    });
 
-  const json = await res.json();
-  console.log(`Register response: ${res.status} | ${JSON.stringify(json)}`);
+    const json = await res.json();
+    logger.debug(`Register response: ${res.status} | ${JSON.stringify(json)}`);
 
-  const content = res.ok && !json.error
-    ? `Registered as ${rsn}`
-    : `Registration failed: ${json.error || 'Unknown error'}`;
+    const content = res.ok && !json.error
+      ? `Registered as ${rsn}`
+      : `Registration failed: ${json.error || 'Unknown error'}`;
 
-  await interaction.editReply({ content });
+    await safeEdit(interaction, content);
+  } catch (err) {
+    logger.error(`Register fetch error: ${err.stack || err}`);
+    await safeEdit(interaction, 'An error occurred while processing your registration.');
+  }
 }
 
 async function handleSubmit(interaction, opts) {
   const question = opts.getString('question');
   const answer = opts.getString('answer');
   if (!question || !answer) {
-    await interaction.editReply({ content: 'You must supply both question and answer.' });
+    await safeEdit(interaction, 'You must supply both question and answer.');
     return;
   }
 
@@ -95,52 +140,78 @@ async function handleSubmit(interaction, opts) {
   };
   if (Number.isInteger(weekOpt)) payload.week_id = weekOpt - 1;
 
-  const res = await fetch(`${process.env.API_URL}?action=submit`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-API-KEY': process.env.API_KEY
-    },
-    body: JSON.stringify(payload),
-  });
+  try {
+    const res = await fetch(`${process.env.API_URL}?action=submit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-KEY': process.env.API_KEY
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const json = await res.json();
-  console.log(`Submit response: ${res.status} | ${JSON.stringify(json)}`);
+    const json = await res.json();
+    logger.debug(`Submit response: ${res.status} | ${JSON.stringify(json)}`);
 
-  const content = res.ok && !json.error
-    ? 'Question submitted successfully.'
-    : `Submission failed: ${json.error || 'Unknown error'}`;
+    const content = res.ok && !json.error
+      ? 'Question submitted successfully.'
+      : `Submission failed: ${json.error || 'Unknown error'}`;
 
-  await interaction.editReply({ content });
+    await safeEdit(interaction, content);
+  } catch (err) {
+    logger.error(`Submit fetch error: ${err.stack || err}`);
+    await safeEdit(interaction, 'An error occurred while submitting your question.');
+  }
 }
 
-// Main handler
+// ─── Safe Edit Wrapper ────────────────────────────────────────────────────────
+async function safeEdit(interaction, content) {
+  try {
+    await interaction.editReply({ content });
+    logger.debug('editReply success: ' + JSON.stringify(content));
+  } catch (err) {
+    logger.error('editReply failed: ' + (err.stack || err));
+  }
+}
+
+// ─── Interaction Router ───────────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) {
     try {
       await interaction.reply({ content: 'Unsupported command type.', ephemeral: true });
     } catch (e) {
-      console.error(`Failed to reply to non-chat input: ${e}`);
+      logger.error(`Non-command interaction reply failed: ${e.stack || e}`);
     }
     return;
   }
 
   const cmd = interaction.commandName;
   const opts = interaction.options;
-  console.log(`Command: /${cmd} | Options: ${JSON.stringify(opts.data)}`);
+  const interactionTime = interaction.createdTimestamp;
+  const delta = Date.now() - interactionTime;
+  logger.info(`Command: /${cmd} | Options: ${JSON.stringify(opts.data)} | Age: ${delta}ms`);
 
   try {
-    // Special handling for ping (non-ephemeral)
     if (cmd === 'ping') {
       await handlePing(interaction);
       return;
     }
 
-    // Decide if the response should be public or ephemeral
     const publicCommands = ['version'];
     const ephemeral = !publicCommands.includes(cmd);
 
-    await interaction.reply({ content: 'Processing...', ephemeral });
+    if (!interaction.replied && !interaction.deferred) {
+      try {
+        await interaction.reply({ content: 'Thimkering REALLY Hardly...', ephemeral });
+        logger.debug(`Initial reply sent for /${cmd} (ephemeral: ${ephemeral})`);
+      } catch (e) {
+        logger.error(`Failed to send initial reply for /${cmd}: ${e.stack || e}`);
+        return;
+      }
+    } else {
+      logger.warn(`Skipped initial reply for /${cmd} — already replied or deferred`);
+      return;
+    }
 
     switch (cmd) {
       case 'helptrivia':
@@ -156,19 +227,15 @@ client.on('interactionCreate', async (interaction) => {
         await handleSubmit(interaction, opts);
         break;
       default:
-        await interaction.editReply({ content: 'Unknown command.' });
+        await safeEdit(interaction, 'Unknown command.');
     }
   } catch (err) {
-    console.error(`Error handling /${cmd}: ${err}`);
-    try {
-      await interaction.editReply({ content: 'An unexpected error occurred.' });
-    } catch (e) {
-      console.error(`Failed to edit reply: ${e}`);
-    }
+    logger.error(`Unhandled error in /${cmd}: ${err.stack || err}`);
+    await safeEdit(interaction, 'An unexpected error occurred.');
   }
 });
 
-// Login
+// ─── Bot Login ────────────────────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log('Login successful.'))
-  .catch(e => console.error(`Login failed: ${e}`));
+  .then(() => logger.info('Login successful.'))
+  .catch(e => logger.error(`Login failed: ${e.stack || e}`));
