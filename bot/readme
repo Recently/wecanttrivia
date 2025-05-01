@@ -1,0 +1,2 @@
+This repo contains all of the node.js files (minus working .env) for a discord.js bot which connects to a php api to register members and submit trivia questions to our sql database.
+
