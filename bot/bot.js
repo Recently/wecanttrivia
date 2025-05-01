@@ -10,7 +10,7 @@ import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 dotenv.config();
-const BOT_VERSION = '0.3.0 Alpha';
+const BOT_VERSION = '0.3.2 Alpha';
 const DEBUG = process.env.DEBUG_LOGGING === 'true';
 
 const transport = new winston.transports.DailyRotateFile({
