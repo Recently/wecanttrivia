@@ -1,5 +1,5 @@
 // bot.js
-import { Client, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { Client, GatewayIntentBits } from 'discord.js';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import winston from 'winston';
@@ -40,34 +40,22 @@ client.once('ready', () => {
   if (DEBUG) logger.debug('Ready event fired');
 });
 
-async function safeDeferReply(interaction, retries = 3, delayMs = 500) {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      logger.debug('Deferred reply successfully');
-      return true;
-    } catch (err) {
-      const fatalErrors = [10062, 40060];
-      if (fatalErrors.includes(err.code)) {
-        logger.error(`[deferReply] Fatal Discord error ${err.code} on attempt ${attempt + 1}, no further retries.`);
-        return false;
-      }
-      logger.warn(`[deferReply] Temporary error on attempt ${attempt + 1}/${retries}: ${err}`);
-      if (attempt === retries) {
-        logger.error('[deferReply] All retry attempts failed.');
-        return false;
-      }
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-      delayMs *= 2;
-    }
+async function safeDeferReply(interaction) {
+  try {
+    await interaction.deferReply({ ephemeral: true });
+    logger.debug('Deferred reply successfully');
+    return true;
+  } catch (err) {
+    logger.error(`[deferReply] Failed with error code ${err.code} — likely timed out`);
+    return false;
   }
 }
 
 async function handleHelpTrivia(interaction) {
   const content = [
-    '?? **Trivia Bot Help**',
+    '📋 **Trivia Bot Help**',
     'If the bot no worky - you can submit your trivia questions here: https://wecantread.club/trivia/',
-    'If you receive command not found error, do not panic... You should try your command again after a few seconds.',
+    'If you receive "command not found", try again after a few seconds.',
     '',
     '• First register: `/register rsn:<Your RSN>`',
     '• Then submit: `/submit question:<Your Question> answer:<Correct Answer> [week:<Number>]`'
@@ -76,7 +64,7 @@ async function handleHelpTrivia(interaction) {
 }
 
 async function handleVersion(interaction) {
-  const content = `Trivia Bot version: ${BOT_VERSION}`;
+  const content = `📦 Trivia Bot version: ${BOT_VERSION}`;
   await interaction.followUp({ content, ephemeral: false });
 }
 
@@ -90,19 +78,22 @@ async function handlePing(interaction) {
 async function handleRegister(interaction, opts) {
   const rsn = opts.getString('rsn');
   if (!rsn) {
-    await interaction.followUp({ content: '? You must provide an RSN to register!', ephemeral: true });
+    await interaction.followUp({ content: '❌ You must provide an RSN to register!', ephemeral: true });
     return;
   }
   const res = await fetch(`${process.env.API_URL}?action=register`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': process.env.API_KEY },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-KEY': process.env.API_KEY
+    },
     body: JSON.stringify({ discord_id: interaction.user.id, rsn }),
   });
   const json = await res.json();
   logger.debug(`Register response: ${res.status} | ${JSON.stringify(json)}`);
   const content = res.ok && !json.error
-    ? `? Registered as **${rsn}**`
-    : `? Registration failed: ${json.error || 'Unknown error'}`;
+    ? `✅ Registered as **${rsn}**`
+    : `❌ Registration failed: ${json.error || 'Unknown error'}`;
   await interaction.followUp({ content, ephemeral: false });
 }
 
@@ -110,31 +101,45 @@ async function handleSubmit(interaction, opts) {
   const question = opts.getString('question');
   const answer = opts.getString('answer');
   if (!question || !answer) {
-    await interaction.followUp({ content: '? You must supply both `question` and `answer`!', ephemeral: true });
+    await interaction.followUp({ content: '❌ You must supply both `question` and `answer`!', ephemeral: true });
     return;
   }
   const weekOpt = opts.getInteger('week');
-  const payload = { discord_id: interaction.user.id, question, answer };
+  const payload = {
+    discord_id: interaction.user.id,
+    question,
+    answer,
+  };
   if (Number.isInteger(weekOpt)) payload.week_id = weekOpt - 1;
 
   const res = await fetch(`${process.env.API_URL}?action=submit`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': process.env.API_KEY },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-KEY': process.env.API_KEY
+    },
     body: JSON.stringify(payload),
   });
   const json = await res.json();
   logger.debug(`Submit response: ${res.status} | ${JSON.stringify(json)}`);
   const content = res.ok && !json.error
-    ? '? Question submitted, good luck!'
-    : `? Submission failed: ${json.error || 'Unknown error'}`;
+    ? '✅ Question submitted, good luck!'
+    : `❌ Submission failed: ${json.error || 'Unknown error'}`;
   await interaction.followUp({ content, ephemeral: false });
 }
 
 client.on('interactionCreate', async (interaction) => {
-  logger.debug(`interactionCreate: ${interaction.id}`);
+  const start = Date.now();
+  const interactionId = interaction.id;
+
+  logger.debug(`interactionCreate: ${interactionId}`);
 
   if (!interaction.isChatInputCommand()) {
-    await interaction.reply({ content: '? Sorry, I only handle slash commands!', ephemeral: true });
+    try {
+      await interaction.reply({ content: '❓ Sorry, I only handle slash commands!', ephemeral: true });
+    } catch (e) {
+      logger.error(`[reply] Failed to handle non-chat command: ${e}`);
+    }
     return;
   }
 
@@ -142,31 +147,44 @@ client.on('interactionCreate', async (interaction) => {
   const opts = interaction.options;
   logger.debug(`Received /${cmd} | Options: ${JSON.stringify(opts.data)}`);
 
-  if (!await safeDeferReply(interaction)) return;
+  // Only defer if we’re within 2.5s
+  const TIMEOUT_LIMIT_MS = 2500;
+  const elapsed = Date.now() - start;
+  let deferred = false;
+
+  if (elapsed < TIMEOUT_LIMIT_MS) {
+    deferred = await safeDeferReply(interaction);
+  } else {
+    logger.warn(`[${cmd}] Too late to defer reply (took ${elapsed}ms)`);
+    return;
+  }
+
+  if (!deferred) return; // Avoid followUp if defer failed
 
   try {
     switch (cmd) {
       case 'helptrivia':
         await handleHelpTrivia(interaction);
-        return;
+        break;
       case 'version':
         await handleVersion(interaction);
-        return;
+        break;
       case 'ping':
         await handlePing(interaction);
-        return;
+        break;
       case 'register':
         await handleRegister(interaction, opts);
-        return;
+        break;
       case 'submit':
         await handleSubmit(interaction, opts);
-        return;
+        break;
+      default:
+        await interaction.followUp({ content: '❓ Unknown command', ephemeral: true });
     }
   } catch (err) {
     logger.error(`[${cmd}] handler error: ${err}`);
-    const content = '? An unexpected error occurred.';
     try {
-      await interaction.followUp({ content, ephemeral: false });
+      await interaction.followUp({ content: '⚠️ An unexpected error occurred.', ephemeral: true });
     } catch (e) {
       logger.error(`[followUp] failed for /${cmd}: ${e}`);
     }
