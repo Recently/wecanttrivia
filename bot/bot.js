@@ -4,7 +4,7 @@ import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 
 dotenv.config();
-const BOT_VERSION = '0.3.5 Alpha';
+const BOT_VERSION = '0.3.7 Alpha';
 const DEBUG = process.env.DEBUG_LOGGING === 'true';
 
 console.log('Bot starting...');
@@ -17,6 +17,7 @@ client.once('ready', () => {
   console.log(`Created by Recent - Version ${BOT_VERSION}`);
 });
 
+// Command handlers
 async function handleHelpTrivia(interaction) {
   const content = [
     '**Trivia Bot Help**',
@@ -35,9 +36,21 @@ async function handleVersion(interaction) {
 }
 
 async function handlePing(interaction) {
-  const sent = Date.now();
-  const latency = Date.now() - sent;
-  await interaction.editReply({ content: `Pong! Latency is ${latency}ms.` });
+  const reply = await interaction.reply({
+    content: 'Pinging...',
+    ephemeral: false,
+    fetchReply: true
+  });
+
+  const roundTripLatency = reply.createdTimestamp - interaction.createdTimestamp;
+  const discordApiLatency = client.ws.ping;
+
+  const response = [
+    `Pong! Round-trip latency: ${roundTripLatency}ms`,
+    `Discord API latency: ${Math.round(discordApiLatency)}ms`
+  ].join('\n');
+
+  await interaction.editReply({ content: response });
 }
 
 async function handleRegister(interaction, opts) {
@@ -101,6 +114,7 @@ async function handleSubmit(interaction, opts) {
   await interaction.editReply({ content });
 }
 
+// Main handler
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) {
     try {
@@ -116,7 +130,17 @@ client.on('interactionCreate', async (interaction) => {
   console.log(`Command: /${cmd} | Options: ${JSON.stringify(opts.data)}`);
 
   try {
-    await interaction.reply({ content: 'Thinkering really hard about it...', ephemeral: true });
+    // Special handling for ping (non-ephemeral)
+    if (cmd === 'ping') {
+      await handlePing(interaction);
+      return;
+    }
+
+    // Decide if the response should be public or ephemeral
+    const publicCommands = ['version'];
+    const ephemeral = !publicCommands.includes(cmd);
+
+    await interaction.reply({ content: 'Processing...', ephemeral });
 
     switch (cmd) {
       case 'helptrivia':
@@ -124,9 +148,6 @@ client.on('interactionCreate', async (interaction) => {
         break;
       case 'version':
         await handleVersion(interaction);
-        break;
-      case 'ping':
-        await handlePing(interaction);
         break;
       case 'register':
         await handleRegister(interaction, opts);
@@ -147,6 +168,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// Login
 client.login(process.env.DISCORD_TOKEN)
   .then(() => console.log('Login successful.'))
   .catch(e => console.error(`Login failed: ${e}`));
