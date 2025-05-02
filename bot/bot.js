@@ -6,7 +6,7 @@ import winston from 'winston';
 import 'winston-daily-rotate-file';
 
 dotenv.config();
-const BOT_VERSION = '0.4.0 Alpha';
+const BOT_VERSION = '0.4.1 Alpha';
 const DEBUG = process.env.DEBUG_LOGGING === 'true';
 
 // ─── Logger Setup ─────────────────────────────────────────────────────────────
@@ -59,10 +59,11 @@ async function handlePing(interaction) {
   const interactionTime = interaction.createdTimestamp;
   const now = Date.now();
   const delta = now - interactionTime;
+  const userTag = interaction.user?.tag || interaction.user?.id;
   logger.debug(`Ping command received. Interaction created ${delta}ms ago`);
 
   if (interaction.replied || interaction.deferred) {
-    logger.warn('Ping interaction already replied or deferred — skipping reply.');
+    logger.warn(`Ping interaction already replied or deferred | User: ${userTag} | ID: ${interaction.id}`);
     return;
   }
 
@@ -75,7 +76,7 @@ async function handlePing(interaction) {
     });
     logger.debug('Ping reply sent successfully.');
   } catch (err) {
-    logger.error(`Ping reply failed: ${err.stack || err}`);
+    logger.error(`Ping reply failed | User: ${userTag} | ID: ${interaction.id} | ${err.stack || err}`);
     return;
   }
 
@@ -89,7 +90,7 @@ async function handlePing(interaction) {
     await interaction.editReply({ content: response });
     logger.debug(`Ping reply edited: round-trip ${roundTripLatency}ms`);
   } catch (err) {
-    logger.error(`Ping editReply failed: ${err.stack || err}`);
+    logger.error(`Ping editReply failed | User: ${userTag} | ID: ${interaction.id} | ${err.stack || err}`);
   }
 }
 
@@ -170,7 +171,7 @@ async function safeEdit(interaction, content) {
     await interaction.editReply({ content });
     logger.debug('editReply success: ' + JSON.stringify(content));
   } catch (err) {
-    logger.error('editReply failed: ' + (err.stack || err));
+    logger.error(`editReply failed | ID: ${interaction.id} | ${err.stack || err}`);
   }
 }
 
@@ -189,7 +190,9 @@ client.on('interactionCreate', async (interaction) => {
   const opts = interaction.options;
   const interactionTime = interaction.createdTimestamp;
   const delta = Date.now() - interactionTime;
-  logger.info(`Command: /${cmd} | Options: ${JSON.stringify(opts.data)} | Age: ${delta}ms`);
+  const userTag = interaction.user?.tag || interaction.user?.id;
+
+  logger.info(`Command: /${cmd} | User: ${userTag} | ID: ${interaction.id} | Age: ${delta}ms | Options: ${JSON.stringify(opts.data)}`);
 
   try {
     if (cmd === 'ping') {
@@ -205,11 +208,11 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: 'Thimkering REALLY Hardly...', ephemeral });
         logger.debug(`Initial reply sent for /${cmd} (ephemeral: ${ephemeral})`);
       } catch (e) {
-        logger.error(`Failed to send initial reply for /${cmd}: ${e.stack || e}`);
+        logger.error(`Failed to send initial reply for /${cmd} | User: ${userTag} | ID: ${interaction.id} | Error: ${e.stack || e}`);
         return;
       }
     } else {
-      logger.warn(`Skipped initial reply for /${cmd} — already replied or deferred`);
+      logger.warn(`Skipped initial reply for /${cmd} — already replied or deferred | User: ${userTag} | ID: ${interaction.id}`);
       return;
     }
 
@@ -230,7 +233,7 @@ client.on('interactionCreate', async (interaction) => {
         await safeEdit(interaction, 'Unknown command.');
     }
   } catch (err) {
-    logger.error(`Unhandled error in /${cmd}: ${err.stack || err}`);
+    logger.error(`Unhandled error in /${cmd} | ID: ${interaction.id} | ${err.stack || err}`);
     await safeEdit(interaction, 'An unexpected error occurred.');
   }
 });
