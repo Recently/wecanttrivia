@@ -10,3 +10,22 @@ npm install discord.js dotenv node-fetch winston winston-daily-rotate-file
 npm install pm2 -g
 npm install
 pm2 start bot.js --watch
+
+
+
+Other readme stuffs:
+
+Linux:
+npx pm2 status
+npx pm2 logs wecantread-bot
+npx pm2 stop wecantread-bot
+npx pm2 restart wecantread-bot
+
+
+to start de bot manually: npm start or node bot.js or npx pm2 start wecantreadbot or whatever it is :D GG NERDS
+.env - important variables :D
+bot.js - main runstuff, edit values and important info here
+node clear-global-commands.js = clear the globals from discord
+node deploy-commands.js = deploays the slash commands to discord for propagationg - can take 1 hr
+
+
