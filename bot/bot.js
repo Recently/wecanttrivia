@@ -6,15 +6,15 @@ import winston from 'winston';
 import 'winston-daily-rotate-file';
 
 dotenv.config();
-const BOT_VERSION = '0.4.1 Alpha';
+const BOT_VERSION = '0.4.2 Alpha';
 const DEBUG = process.env.DEBUG_LOGGING === 'true';
 
-// ─── Logger Setup ─────────────────────────────────────────────────────────────
+// --- Logger Setup -------------------------------------------------------------
 const transport = new winston.transports.DailyRotateFile({
   filename: 'logs/bot-%DATE%.log',
   datePattern: 'YYYY-MM-DD',
   zippedArchive: false,
-  maxFiles: '2d',
+  maxFiles: '14d',
 });
 
 const logger = winston.createLogger({
@@ -29,7 +29,7 @@ const logger = winston.createLogger({
 logger.info('Bot starting...');
 if (DEBUG) logger.debug('Debug logging ENABLED');
 
-// ─── Discord Client ───────────────────────────────────────────────────────────
+// --- Discord Client -----------------------------------------------------------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', () => {
@@ -37,7 +37,7 @@ client.once('ready', () => {
   logger.info(`Created by Recent - Version ${BOT_VERSION}`);
 });
 
-// ─── Command Handlers ─────────────────────────────────────────────────────────
+// --- Command Handlers ---------------------------------------------------------
 async function handleHelpTrivia(interaction) {
   const content = [
     '**Trivia Bot Help**',
@@ -95,9 +95,15 @@ async function handlePing(interaction) {
 }
 
 async function handleRegister(interaction, opts) {
-  const rsn = opts.getString('rsn');
+  const rsn = opts.getString('rsn')?.trim();
   if (!rsn) {
     await safeEdit(interaction, 'You must provide an RSN to register.');
+    return;
+  }
+
+  if (rsn.length > 25) {
+    await safeEdit(interaction, 'RSN must be 25 characters or fewer.');
+    logger.warn(`RSN too long: "${rsn}" | User: ${interaction.user.tag}`);
     return;
   }
 
@@ -126,10 +132,23 @@ async function handleRegister(interaction, opts) {
 }
 
 async function handleSubmit(interaction, opts) {
-  const question = opts.getString('question');
-  const answer = opts.getString('answer');
+  const question = opts.getString('question')?.trim();
+  const answer = opts.getString('answer')?.trim();
+
   if (!question || !answer) {
-    await safeEdit(interaction, 'You must supply both question and answer.');
+    await safeEdit(interaction, 'You must supply both a question and an answer.');
+    return;
+  }
+
+  if (question.length < 5 || question.length > 150) {
+    await safeEdit(interaction, 'Question must be between 5 and 150 characters.');
+    logger.warn(`Invalid question length: ${question.length} | User: ${interaction.user.tag}`);
+    return;
+  }
+
+  if (answer.length < 1 || answer.length > 75) {
+    await safeEdit(interaction, 'Answer must be between 1 and 75 characters.');
+    logger.warn(`Invalid answer length: ${answer.length} | User: ${interaction.user.tag}`);
     return;
   }
 
@@ -151,7 +170,15 @@ async function handleSubmit(interaction, opts) {
       body: JSON.stringify(payload),
     });
 
-    const json = await res.json();
+    let json;
+    try {
+      json = await res.json();
+    } catch (err) {
+      logger.error(`Invalid JSON from submit endpoint | Status: ${res.status} | Error: ${err.message}`);
+      await safeEdit(interaction, 'Submission failed: invalid response from server.');
+      return;
+    }
+
     logger.debug(`Submit response: ${res.status} | ${JSON.stringify(json)}`);
 
     const content = res.ok && !json.error
@@ -165,7 +192,7 @@ async function handleSubmit(interaction, opts) {
   }
 }
 
-// ─── Safe Edit Wrapper ────────────────────────────────────────────────────────
+// --- Safe Edit Wrapper --------------------------------------------------------
 async function safeEdit(interaction, content) {
   try {
     await interaction.editReply({ content });
@@ -175,7 +202,7 @@ async function safeEdit(interaction, content) {
   }
 }
 
-// ─── Interaction Router ───────────────────────────────────────────────────────
+// --- Interaction Router -------------------------------------------------------
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) {
     try {
@@ -238,7 +265,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-// ─── Bot Login ────────────────────────────────────────────────────────────────
+// --- Bot Login ----------------------------------------------------------------
 client.login(process.env.DISCORD_TOKEN)
   .then(() => logger.info('Login successful.'))
   .catch(e => logger.error(`Login failed: ${e.stack || e}`));
