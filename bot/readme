@@ -1,2 +1,12 @@
 This repo contains all of the node.js files (minus working .env) for a discord.js bot which connects to a php api to register members and submit trivia questions to our sql database.
 
+
+To use (windows 10 adjusted):
+
+Make sure node version 18.0+ https://nodejs.org/en/download
+(Use the latest LTS)
+Setup .env with needed variablez
+npm install discord.js dotenv node-fetch winston winston-daily-rotate-file
+npm install pm2 -g
+npm install
+pm2 start bot.js --watch
